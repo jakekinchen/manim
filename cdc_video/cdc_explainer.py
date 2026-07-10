@@ -34,7 +34,7 @@ OK = "#43c464"
 
 # F2^3 elements as colors: bit0 = red, bit1 = green, bit2 = blue light
 GAMMA = {
-    (0, 0, 0): "#8f97ab",   # gray  (all off)
+    (0, 0, 0): "#99a3b8",   # gray  (all off)
     (0, 0, 1): "#4e8df5",   # blue
     (0, 1, 0): "#43c464",   # green
     (0, 1, 1): "#35c8c8",   # cyan
@@ -252,10 +252,12 @@ class CDC(Scene):
             grp.scale_to_fit_width(12.6)
         grp.move_to([0, CAP_Y - (0 if len(lines) == 1 else 0.12), 0])
         grp.set_z_index(20)
-        anims = [FadeIn(grp, shift=UP * 0.18)]
         if self._cap is not None:
-            anims.append(FadeOut(self._cap))
-        self.play(*anims, run_time=0.45)
+            self.play(LaggedStart(FadeOut(self._cap, run_time=0.3),
+                                  FadeIn(grp, shift=UP * 0.18, run_time=0.4),
+                                  lag_ratio=0.55), run_time=0.6)
+        else:
+            self.play(FadeIn(grp, shift=UP * 0.18), run_time=0.45)
         self._cap = grp
         self.wait(max(2.1, 0.052 * len(text.replace("\n", ""))) + extra)
         return grp
@@ -264,6 +266,13 @@ class CDC(Scene):
         if self._cap is not None:
             self.play(FadeOut(self._cap), run_time=0.35)
             self._cap = None
+
+    def veil(self, opacity=0.94):
+        """Clear the caption, then raise a near-opaque veil for card moments."""
+        self.clear_cap()
+        v = Rectangle(width=15, height=9, fill_color="#0e1116",
+                      fill_opacity=opacity, stroke_opacity=0).set_z_index(9)
+        return v
 
     def sweep(self, keep=()):
         keepset = set(keep) | ({self._chap} if hasattr(self, "_chap") else set())
@@ -284,7 +293,9 @@ class Ch0Title(CDC):
         self.play(eg.animate.set_opacity(0.55), ng.animate.set_opacity(0.8),
                   run_time=1.4)
         reg = LaneRegistry()
-        loops = [reg_loop(pos, c, "#5b6a8c", reg, w=4) for c in HEMI]
+        tease = ["#8c4b4b", "#8c7a3f", "#4b7a4f", "#3f7a7a", "#4b5f8c", "#7a4b8c"]
+        loops = [reg_loop(pos, c, col, reg, w=4)
+                 for c, col in zip(HEMI, tease)]
         self.play(LaggedStart(*[Create(l) for l in loops], lag_ratio=0.18),
                   run_time=3.2)
         veil = Rectangle(width=15, height=9, fill_color="#0e1116",
@@ -350,16 +361,55 @@ class Ch1Game(CDC):
         self.say("Two lanes on every road: a DOUBLE COVER.",
                  t2c={"DOUBLE COVER": ACC})
 
-        # why twice? junction parity
-        self.play(*[l.animate.set_stroke(opacity=0.25) for l in loops],
-                  cnt.animate.set_opacity(0.3), run_time=0.6)
+        # why twice? junction parity — animated pass + slot tallies
+        self.play(*[l.animate.set_stroke(opacity=0.12) for l in loops],
+                  cnt.animate.set_opacity(0.25), run_time=0.6)
         spot = Circle(radius=0.62, color=ACC, stroke_width=3).move_to(pos[1])
-        self.play(Create(spot), run_time=0.7)
-        self.say("Why twice, not once? Watch a junction: a loop that visits\nmust come in on one road and leave on another — roads get used in PAIRS.",
-                 t2c={"PAIRS": ACC})
-        self.say("Three roads meet here. Cover each ONCE: that's 3 lane-slots —\nbut pairs can only fill an even number. Three is odd. Impossible.",
+        self.play(Create(spot), run_time=0.6)
+        self.say("Why twice, not once? Watch a loop visit a junction:",
+                 extra=-1.2)
+        e_in, e_out = lines[(0, 1)], lines[(1, 3)]
+        mid_in = (pos[0] + pos[1]) / 2
+        mid_out = (pos[1] + pos[3]) / 2
+        w = Dot(radius=0.11, color=ACC, z_index=8).move_to(mid_in)
+        self.play(FadeIn(w), e_in.animate.set_stroke(color=ACC, width=7),
+                  run_time=0.4)
+        self.play(w.animate.move_to(pos[1]), run_time=0.55, rate_func=linear)
+        self.play(w.animate.move_to(mid_out),
+                  e_out.animate.set_stroke(color=ACC, width=7),
+                  run_time=0.55, rate_func=linear)
+        self.say("In on one road, out on another —\nevery visit uses roads in PAIRS.", t2c={"PAIRS": ACC})
+        self.play(FadeOut(w),
+                  e_in.animate.set_stroke(color=EDGE_C, width=4.5),
+                  e_out.animate.set_stroke(color=EDGE_C, width=4.5),
+                  run_time=0.5)
+
+        def slots(n, filled, fc):
+            g = VGroup(*[Square(side_length=0.34)
+                         .set_stroke(color="#4a5570", width=2)
+                         .set_fill(fc if i < filled else "#1a2030", opacity=1.0)
+                         for i in range(n)])
+            return g.arrange(RIGHT, buff=0.12)
+
+        panelA = VGroup(
+            Text("cover each road once → 3 slots", font_size=22, color=MUT),
+            slots(3, 2, ACC)).arrange(DOWN, buff=0.18).move_to([3.9, 2.45, 0])
+        self.play(FadeIn(panelA, shift=LEFT * 0.3), run_time=0.7)
+        lonely = panelA[1][2]
+        x_ = Text("✕", font_size=26, weight=BOLD, color=BAD
+                  ).next_to(lonely, RIGHT, buff=0.16)
+        self.play(lonely.animate.set_stroke(color=BAD, width=3),
+                  FadeIn(x_, scale=1.4), run_time=0.6)
+        self.say("Cover each road ONCE: three slots at this junction. Pairs fill\ntwo at a time — one slot is always stranded. Three is odd. Impossible.",
                  t2c={"ONCE": BAD, "odd": BAD})
-        self.say("Cover each TWICE: 6 slots — three visits fit perfectly.\n\"Twice\" isn't a quirk of the game. It's forced by the junctions.",
+        panelB = VGroup(
+            Text("cover each road twice → 6 slots", font_size=22, color=MUT),
+            slots(6, 6, OK)).arrange(DOWN, buff=0.18)
+        panelB.next_to(panelA, DOWN, buff=0.6)
+        chk = Text("✓", font_size=26, weight=BOLD, color=OK
+                   ).next_to(panelB[1], RIGHT, buff=0.16)
+        self.play(FadeIn(panelB, shift=LEFT * 0.3), FadeIn(chk), run_time=0.7)
+        self.say("Cover each TWICE: six slots — three visits fit perfectly.\n\"Twice\" isn't a quirk of the game. It's forced by the junctions.",
                  t2c={"TWICE": ACC})
         self.sweep()
 
@@ -381,11 +431,11 @@ class Ch2Maps(CDC):
             poly = Polygon(*[pos[v] for v in faces[f]], stroke_opacity=0,
                            fill_color=c, fill_opacity=0.22, z_index=0)
             fills[f] = poly
-        big = RoundedRectangle(corner_radius=0.2, width=13.4, height=7.0
+        big = RoundedRectangle(corner_radius=0.25, width=7.5, height=6.6
                                ).move_to([0, 0.5, 0])
         outer_sq = Polygon(*[pos[v] for v in faces["outer"]])
         outside = Difference(big, outer_sq, stroke_opacity=0,
-                             fill_color="#d45cf0", fill_opacity=0.10)
+                             fill_color="#d45cf0", fill_opacity=0.13)
         outside.set_z_index(0)
         self.play(LaggedStart(*[FadeIn(p) for p in fills.values()],
                               lag_ratio=0.15), run_time=1.6)
@@ -396,17 +446,26 @@ class Ch2Maps(CDC):
 
         # each road borders exactly two regions
         e1 = lines[(4, 5)]
-        self.play(e1.animate.set_stroke(color=ACC, width=8), run_time=0.5)
-        self.play(Indicate(fills["bottom"], scale_factor=1.02),
-                  Indicate(fills["inner"], scale_factor=1.02), run_time=1.4)
+        others1 = [f for k, f in fills.items() if k not in ("bottom", "inner")]
+        self.play(e1.animate.set_stroke(color=ACC, width=8),
+                  *[f.animate.set_fill(opacity=0.05) for f in others1],
+                  outside.animate.set_fill(opacity=0.04), run_time=0.6)
+        self.play(fills["bottom"].animate.set_fill(opacity=0.5), run_time=0.5)
+        self.play(fills["bottom"].animate.set_fill(opacity=0.22),
+                  fills["inner"].animate.set_fill(opacity=0.5), run_time=0.5)
+        self.play(fills["inner"].animate.set_fill(opacity=0.22), run_time=0.4)
         self.say("Now the key fact: every road touches exactly TWO regions,\none on each side.", t2c={"TWO": ACC})
         e2 = lines[(0, 1)]
         self.play(e1.animate.set_stroke(color=EDGE_C, width=4.5),
-                  e2.animate.set_stroke(color=ACC, width=8), run_time=0.5)
-        self.play(Indicate(fills["bottom"], scale_factor=1.02),
-                  Indicate(outside, scale_factor=1.005), run_time=1.4)
+                  e2.animate.set_stroke(color=ACC, width=8),
+                  fills["bottom"].animate.set_fill(opacity=0.5),
+                  outside.animate.set_fill(opacity=0.32), run_time=0.7)
         self.say("Even the rim roads: one side is a room, the other is the outside.")
-        self.play(e2.animate.set_stroke(color=EDGE_C, width=4.5), run_time=0.4)
+        self.play(e2.animate.set_stroke(color=EDGE_C, width=4.5),
+                  fills["bottom"].animate.set_fill(opacity=0.22),
+                  outside.animate.set_fill(opacity=0.13),
+                  *[f.animate.set_fill(opacity=0.22) for f in others1],
+                  run_time=0.6)
 
         # walk all region borders
         loops = []
@@ -440,10 +499,12 @@ class Ch2Maps(CDC):
         self.play(*[FadeOut(m) for m in [*fills.values(), outside, *loops, eg, ng]],
                   run_time=0.9)
         self.play(Create(peg), FadeIn(png_), run_time=1.5)
-        marks = VGroup(*[Text("✕", font_size=26, color=BAD).move_to(p)
-                         for p in crosses[:5]])
-        self.play(LaggedStart(*[FadeIn(m, scale=1.4) for m in marks],
-                              lag_ratio=0.1), run_time=1.0)
+        marks = VGroup(*[Text("✕", font_size=34, weight=BOLD, color="#ff6b6b"
+                              ).move_to(p) for p in crosses[:5]])
+        self.play(LaggedStart(
+            *[AnimationGroup(FadeIn(m, scale=1.7),
+                             Flash(m, color=BAD, flash_radius=0.4))
+              for m in marks], lag_ratio=0.15), run_time=1.6)
         self.say("But most networks are NOT flat — draw this one and roads cross.\nNo flat drawing of it exists.", t2c={"NOT": BAD})
         self.say("No flat drawing → no regions → the map trick dies.\nDoes a double cover still exist? THAT is the question.",
                  t2c={"THAT": ACC})
@@ -496,8 +557,7 @@ class Ch3Bridges(CDC):
         # the conjecture card
         self.say("The conjecture says: bridges are the ONLY obstacle.",
                  t2c={"ONLY": ACC})
-        veil = Rectangle(width=15, height=9, fill_color="#0e1116",
-                         fill_opacity=0.88, stroke_opacity=0).set_z_index(9)
+        veil = self.veil()
         card1 = Text("THE CYCLE DOUBLE COVER CONJECTURE", font_size=30,
                      weight=BOLD, color=ACC).set_z_index(10).move_to(UP * 1.5)
         card2 = Text("Every network without a bridge\ncan have all its roads covered by loops,\neach road exactly twice.",
@@ -598,11 +658,13 @@ class Ch4Snarks(CDC):
         self.say("But this loop has FIVE roads. Red, blue, red, blue…\nthe fifth touches BOTH a red and a blue. Odd loops break the pattern.",
                  t2c={"FIVE": BAD, "Odd": BAD})
         x1 = Text("✕", font_size=40, weight=BOLD, color=BAD).move_to(q)
-        self.play(Transform(q, x1),
-                  last.animate.set_stroke(color=BAD), run_time=0.6)
+        self.play(Transform(q, x1), Flash(last.get_center(), color=BAD,
+                                          flash_radius=0.5),
+                  run_time=0.6)
         self.wait(1.2)
-        self.say("And in Petersen, EVERY possible green-choice leaves odd loops.\n(All six ways — each strands two 5-road loops.) No 3-painting exists.",
+        self.say("And in Petersen, EVERY possible green-choice leaves odd loops —\nthere are only six ways, and each strands two 5-road loops. Checked.",
                  t2c={"EVERY": BAD})
+        self.say("No 3-painting of this network exists. Ever.")
         self.say("Unpaintable networks earned a name: SNARKS —\nafter Lewis Carroll's uncatchable beast.", t2c={"SNARKS": ACC})
         self.say("Why it matters: a smallest counterexample to the conjecture\nwould have to be a snark. Snarks are where the puzzle hid for 50 years.")
         self.sweep()
@@ -632,7 +694,7 @@ class Ch5Flow(CDC):
         self.play(FadeOut(row), FadeOut(note), run_time=0.5)
 
         # 8-flow on Petersen
-        ppos, pedges = pet_layout(cy=0.0, R=2.1, r=1.15)
+        ppos, pedges = pet_layout(cy=-0.42, R=1.95, r=1.07)
         set_universe(pedges)
         peg, png_, plines, pdots = make_graph(ppos, pedges)
         self.play(Create(peg), FadeIn(png_), run_time=1.3)
@@ -650,7 +712,7 @@ class Ch5Flow(CDC):
                      Text("⊕", font_size=32), mini[2],
                      Text("=", font_size=32), chip((0, 0, 0), h=0.5),
                      Text("✓", font_size=34, color=OK, weight=BOLD))
-        seq.arrange(RIGHT, buff=0.22).to_edge(RIGHT, buff=0.5).shift(UP * 1.9)
+        seq.arrange(RIGHT, buff=0.22).move_to(UP * 2.2)
         for m, e in zip(mini, e_at0):
             m.save_state()
             m.move_to((ppos[e[0]] + ppos[e[1]]) / 2).scale(0.3)
@@ -678,10 +740,10 @@ class Ch6TwoColors(CDC):
         self.wait(1.2)
         self.play(FadeIn(rule2, scale=1.03), run_time=0.9)
         self.say("Sounds arbitrary? It's a loop-making machine.")
-        self.play(rule1.animate.set_opacity(0.25), rule2.animate.scale(0.62)
-                  .set_color(INK).to_edge(UP, buff=0.25).set_opacity(0.85),
+        pin = Text("rule: each color ×2 or ×0 at every junction",
+                   font_size=22, color="#b9c2d4").to_corner(UR, buff=0.4)
+        self.play(FadeOut(rule1), ReplacementTransform(rule2, pin),
                   run_time=0.8)
-        self.remove(rule1)
 
         # cube demo with pair lanes
         pos, edges, (horiz, vert, spokes), faces = cube_layout(cx=-2.6, cy=0.15,
@@ -741,18 +803,17 @@ class Ch6TwoColors(CDC):
                   *[lanes[e].animate.set_opacity(1.0) for e in edges],
                   run_time=0.7)
         panels = []
-        trio = [(GRAY, ["outer", "inner"], "gray"), (RED, ["left", "right"], "red"),
-                (BLUE, ["bottom", "top"], "blue")]
-        base_x = 2.9
-        for i, (col, fs, nm) in enumerate(trio):
-            mini_pos = {k: (v - np.array([-2.6, 0.15, 0])) * 0.42
-                        + np.array([base_x + 0 * i, 2.0 - 2.0 * i, 0])
-                        for k, v in pos.items()}
-            g = VGroup(*[Line(mini_pos[e[0]], mini_pos[e[1]], stroke_width=2,
-                              color=EDGE_C, stroke_opacity=0.5) for e in edges])
-            loops = VGroup(*[face_loop(mini_pos, faces[f], GAMMA[col], w=3.5,
-                                       outward=(f == "outer")) for f in fs])
-            panels.append(VGroup(g, loops))
+        trio = [(GRAY, ["outer", "inner"]), (RED, ["left", "right"]),
+                (BLUE, ["bottom", "top"])]
+        fpos, fedges, _, ffaces = cube_layout(cx=0.0, cy=0.0, out=2.05, inn=1.02)
+        for i, (col, fs) in enumerate(trio):
+            g = VGroup(*[Line(fpos[e[0]], fpos[e[1]], stroke_width=3.5,
+                              color=EDGE_C, stroke_opacity=0.75)
+                         for e in fedges])
+            lps = VGroup(*[face_loop(fpos, ffaces[f], GAMMA[col], w=5.5,
+                                     outward=(f == "outer")) for f in fs])
+            panels.append(VGroup(g, lps).scale(0.40)
+                          .move_to([3.15, 2.05 - 2.05 * i, 0]))
         self.play(LaggedStart(*[FadeIn(p, shift=LEFT * 0.3) for p in panels],
                               lag_ratio=0.25), run_time=1.8)
         self.say("Each color's lanes: a family of loops. Three families here —\nand every road wears two colors, so it lies in exactly TWO loops.",
@@ -769,15 +830,15 @@ class Ch7Recipe(CDC):
     def construct(self):
         self.say("The paper builds the dressing out of the 8-flow labels.\nStep one: a recipe that works at each junction alone.")
         # junction close-up: vertex 0 of Petersen, real values
-        C = np.array([-3.4, 0.9, 0])
+        C = np.array([-3.4, 0.45, 0])
         dirs = [np.array([np.cos(a), np.sin(a), 0])
                 for a in np.deg2rad([90, 210, 330])]
-        stubs = [Line(C, C + 2.0 * d, stroke_width=6) for d in dirs]
+        stubs = [Line(C, C + 1.75 * d, stroke_width=6) for d in dirs]
         fl = [(1, 0, 1), (1, 0, 0), (0, 0, 1)]     # x, y, z at junction 0
         for s, f in zip(stubs, fl):
             s.set_color(GAMMA[f])
         jd = node_dot(C)
-        chips_ = [chip(f, h=0.42).next_to(C + 2.0 * d, d, buff=0.12)
+        chips_ = [chip(f, h=0.42).next_to(C + 1.75 * d, d, buff=0.12)
                   for d, f in zip(dirs, fl)]
         self.play(*[Create(s) for s in stubs], FadeIn(jd), run_time=1.0)
         self.play(*[FadeIn(c) for c in chips_], run_time=0.7)
@@ -810,8 +871,8 @@ class Ch7Recipe(CDC):
                     ((1, 0, 0), (1, 0, 1))]   # real pairs at v0: (0,1),(4,0),(0,5)
         lane_grp = VGroup()
         for s, d, (c1, c2) in zip(stubs, dirs, pair_map):
-            a1, b1 = lane_pts(C, C + 2.0 * d, +1, off=0.10, trim=0.14)
-            a2, b2 = lane_pts(C, C + 2.0 * d, -1, off=0.10, trim=0.14)
+            a1, b1 = lane_pts(C, C + 1.75 * d, +1, off=0.10, trim=0.14)
+            a2, b2 = lane_pts(C, C + 1.75 * d, -1, off=0.10, trim=0.14)
             lane_grp.add(Line(a1, b1, stroke_width=5, color=GAMMA[c1], z_index=4),
                          Line(a2, b2, stroke_width=5, color=GAMMA[c2], z_index=4))
         self.play(*[s.animate.set_opacity(0.25) for s in stubs],
@@ -856,13 +917,15 @@ class Ch7Recipe(CDC):
         klab = Text("B's base color t", font_size=22, color=ACC).next_to(
             knob, RIGHT, buff=0.2)
         self.play(FadeIn(knob), FadeIn(klab), run_time=0.6)
+        self.say("The fix: turn junction B's knob — change its base color t.",
+                 extra=-1.6)
         self.play(Rotate(knob[1], angle=-2 * PI / 3,
                          about_point=knob[0].get_center()), run_time=0.8)
         rg2 = prop_lanes(mid + RIGHT * 0.25, v, Lp)
         ok = Text("✓", font_size=40, weight=BOLD, color=OK).move_to(mid)
         self.play(Transform(rg, rg2), run_time=0.8)
         self.play(Transform(clash, ok), run_time=0.5)
-        self.say("Fix: turn junction B's knob — change its base color t.\nNow both ends propose {red, cyan}. Handshake. ✓")
+        self.say("Now both ends propose {red, cyan}. Handshake. ✓")
         self.say("But every knob touches THREE roads: fixing this one\ncan break its neighbours. Ten knobs, fifteen handshakes… a web.")
         eqcard = RoundedRectangle(corner_radius=0.12, width=9.4, height=1.0,
                                   stroke_color="#39415a",
@@ -883,7 +946,10 @@ class Ch8Miracle(CDC):
     def construct(self):
         self.say("When can a pile of parity equations be unsolvable?\nLinear algebra gives the only failure mode:", extra=-0.6)
         card = Text("some bundle of equations combines into nonsense:  0 = 1",
-                    font_size=30, color=BAD, weight=BOLD).move_to(UP * 2.3)
+                    font_size=27, color=BAD, weight=BOLD)
+        if card.width > 11.8:
+            card.scale_to_fit_width(11.8)
+        card.move_to(UP * 2.35)
         self.play(FadeIn(card, scale=1.03), run_time=0.8)
         self.say("No nonsense-bundle → a solution exists. Guaranteed.\nSo the paper hunts for nonsense — to prove there is none.")
 
@@ -901,7 +967,12 @@ class Ch8Miracle(CDC):
             b = Text(str(rng.integers(0, 2)), font_size=24, weight=BOLD,
                      color=ACC)
             out = ppos[vv] - ctr
-            b.move_to(ppos[vv] + out / np.linalg.norm(out) * 0.42)
+            u_ = out / np.linalg.norm(out)
+            if vv >= 5:      # nudge inner badges off the spokes/chords
+                a_ = np.deg2rad(28)
+                u_ = np.array([np.cos(a_) * u_[0] - np.sin(a_) * u_[1],
+                               np.sin(a_) * u_[0] + np.cos(a_) * u_[1], 0.0])
+            b.move_to(ppos[vv] + u_ * 0.42)
             badges.add(b)
         self.play(LaggedStart(*[FadeIn(b, scale=1.4) for b in badges],
                               lag_ratio=0.07), run_time=1.2)
@@ -941,8 +1012,7 @@ class Ch8Miracle(CDC):
                  t2c={"NO NONSENSE EXISTS": OK})
         self.say("So the handshake equations always have a solution.\nThe dressing always exists. The loops always appear.")
 
-        veil = Rectangle(width=15, height=9, fill_color="#0e1116",
-                         fill_opacity=0.92, stroke_opacity=0).set_z_index(9)
+        veil = self.veil(0.95)
         qed1 = Text("THEOREM", font_size=30, weight=BOLD, color=ACC
                     ).set_z_index(10).move_to(UP * 1.6)
         qed2 = Text("Every bridgeless network\nhas a cycle double cover.",
@@ -988,8 +1058,11 @@ class Ch9Finale(CDC):
                                                  opacity=0.5) for e in pedges],
                   LaggedStart(*lane_anims, lag_ratio=0.04), run_time=2.0)
         self.say("Step 2 — recipes at all ten junctions, knobs tuned,\nhandshakes solved: every road now wears its two colors.")
+        spot9 = Circle(radius=0.52, color=ACC, stroke_width=3).move_to(ppos[7])
+        self.play(Create(spot9), run_time=0.5)
         self.say("Check any junction: each color there appears exactly twice.",
                  extra=-0.4)
+        self.play(FadeOut(spot9), run_time=0.4)
         # extract loops color by color
         cnt = VGroup(Text("roads with 2 passes", font_size=20, color=MUT),
                      Text("0 / 15", font_size=30, weight=BOLD, color=ACC))
@@ -1041,8 +1114,7 @@ class Ch9Finale(CDC):
         self.wait(0.5)
 
         # end card
-        veil = Rectangle(width=15, height=9, fill_color="#0e1116",
-                         fill_opacity=0.9, stroke_opacity=0).set_z_index(9)
+        veil = self.veil(0.95)
         t1 = Text("THE CYCLE DOUBLE COVER CONJECTURE", font_size=28,
                   weight=BOLD, color=ACC).set_z_index(10).move_to(UP * 2.5)
         t2 = Text("posed 1970s — Szekeres · Itai & Rodeh · Seymour · Tutte\nproof claimed July 2026 (the paper credits an AI system)",
