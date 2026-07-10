@@ -741,7 +741,7 @@ class C03Conjecture(CDC):
                  color=TEXT_C),
             Text("reportedly found by an AI model — now under expert review",
                  font=FONT, font_size=24, color=MUTED),
-        ).arrange(DOWN, buff=0.26).move_to([0, -1.55, 0])
+        ).arrange(DOWN, buff=0.24).move_to([0, -1.92, 0])
         for m in news:
             fit(m)
         self.play(FadeIn(news, shift=UP * 0.25), run_time=1.0)
@@ -1104,13 +1104,13 @@ class C07Triangle(CDC):
         roads = VGroup(*[edge_line(C, A, w=6) for A in arms])
         jnode = node_dot(C, r=0.1)
         stamps = VGroup(*[
-            chip(f, w=0.52).move_to(C + (A - C) * 0.62 +
-                                    normalize(rotate_vector(A - C, PI / 2)) * 0.34)
+            chip(f, w=0.52).move_to(C + (A - C) * 0.56 +
+                                    normalize(rotate_vector(A - C, PI / 2)) * 0.30)
             for A, f in zip(arms, (x, y, xor(x, y)))
         ])
         names = VGroup(*[
             Text(s, font=FONT, font_size=24, color=MUTED).move_to(
-                C + (A - C) * 1.18)
+                C + (A - C) * 1.30)
             for A, s in zip(arms, ("road x", "road y", "road z"))
         ])
 
