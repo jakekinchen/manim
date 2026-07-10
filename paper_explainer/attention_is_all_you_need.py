@@ -145,10 +145,10 @@ class AttentionIsAllYouNeed(Scene):
         if m.width > MAX_CAPTION_W:
             m.scale_to_fit_width(MAX_CAPTION_W)
         m.move_to([0, CAPTION_Y, 0])
-        anims = [FadeIn(m, shift=UP * 0.12)]
+        # swap in two phases so the old and new caption never superimpose
         if self._caption is not None:
-            anims.append(FadeOut(self._caption))
-        self.play(*anims, run_time=0.45)
+            self.play(FadeOut(self._caption, shift=DOWN * 0.08), run_time=0.22)
+        self.play(FadeIn(m, shift=UP * 0.12), run_time=0.3)
         self._caption = m
         dur = t if t is not None else clamp(0.30 * len(text.split()) + 1.0, 2.4, 7.0)
         self.wait(dur)
