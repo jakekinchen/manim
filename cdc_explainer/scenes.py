@@ -354,7 +354,7 @@ class CDC(Scene):
         den.to_corner(UR, buff=0.42).shift(DOWN * 0.42)
         num.next_to(den, LEFT, buff=0.14, aligned_edge=DOWN)
         lab.next_to(den, UP, buff=0.14, aligned_edge=RIGHT)
-        self._ctr_num, self._ctr_den = num, den
+        self._ctr_num, self._ctr_den, self._ctr_label = num, den, lab
         self.play(FadeIn(lab), FadeIn(num), FadeIn(den), run_time=0.4)
         return VGroup(lab, num, den)
 
@@ -424,7 +424,7 @@ class C00Title(CDC):
         self.play(Write(title), run_time=1.1)
         self.play(FadeIn(sub, shift=UP * 0.15), run_time=0.7)
         self.play(FadeIn(tag), FadeIn(prom), run_time=0.7)
-        self.wait(2.6)
+        self.wait(4.2)
         self.clear_all()
 
 
@@ -479,14 +479,12 @@ class C01Game(CDC):
 
         # ---- why twice, not once ------------------------------------------
         self.say("But why ask for twice, and not once?", hold=False)
-        ctr_grp = VGroup(self._ctr_num, self._ctr_den)
-        lab_hits = [m for m in self.mobjects if isinstance(m, Text)
-                    and m.text == "roads walked twice"]
+        ctr_grp = VGroup(self._ctr_num, self._ctr_den, self._ctr_label)
         self.play(
             edges_g.animate.set_stroke(opacity=0.06),
             nodes_g.animate.set_fill(opacity=0.06),
             *[p.animate.set_stroke(opacity=0.05) for p in polys],
-            FadeOut(ctr_grp), *[FadeOut(m) for m in lab_hits],
+            FadeOut(ctr_grp),
             run_time=0.6,
         )
         self.pad()
