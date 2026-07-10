@@ -8,3 +8,4 @@
 *.wav binary
 
 manim/grpc/gen/** linguist-generated=true
+cdc_explainer/*.mp4 binary -text
