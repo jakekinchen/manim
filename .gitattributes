@@ -6,5 +6,6 @@
 *.npz binary
 *.png binary
 *.wav binary
+*.mp4 binary
 
 manim/grpc/gen/** linguist-generated=true
