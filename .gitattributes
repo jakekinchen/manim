@@ -8,3 +8,6 @@
 *.wav binary
 
 manim/grpc/gen/** linguist-generated=true
+*.mp4 binary
+*.gif binary
+*.jpg binary

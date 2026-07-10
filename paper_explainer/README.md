@@ -15,6 +15,9 @@ on-screen captions.
 | **3 · The idea** (solution) | Delete sequential reading. Every word looks at every other word directly — *attention*. The paper's famous example: in "The animal didn't cross the street because **it** was too tired", *it* attends to *animal*; change *tired* → *wide* and it re-aims to *street*. A gentle question/answer picture of Query–Key–Value, then the punchline: everyone attends simultaneously, so both walls fall at once. Multi-head attention and stacked layers, then the name: **the Transformer**. |
 | **Epilogue** | 2017 → BERT → GPT-3 → ChatGPT → Claude/Gemini. "The T in ChatGPT stands for Transformer." |
 
+A pre-rendered copy is checked in as
+[`AttentionIsAllYouNeed.mp4`](./AttentionIsAllYouNeed.mp4) (1080p30, 4:43).
+
 ## Rendering
 
 From the repository root, with this repo's manim installed
