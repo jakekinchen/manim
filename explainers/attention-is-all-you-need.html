@@ -1,0 +1,1009 @@
+<!--
+  "Attention Is All You Need" — a layman's animated explainer (self-contained canvas video)
+
+  Storyboard (chapters):
+    S0 TITLE        the 2017 paper and its audacious name
+    S1 BACKGROUND   how machines read: tokens, and why relationships matter
+    S2 THE OLD WAY  recurrent reading: one word at a time, a single fading memory
+    S3 THE PROBLEM  wall 1: distance (telephone game) · wall 2: waiting (idle parallel chips)
+    S4 THE IDEA     drop the chain; attention — "it" → animal / street demo
+    S5 HOW IT WORKS question / label / content (query·key·value), position badges, many heads
+    S6 WHY IT WINS  one-hop distance + full parallelism → the Transformer, 3.5 days on 8 GPUs
+    S7 LEGACY       scaling → GPT ("T" = Transformer), closing card
+
+  Player: deterministic timeline (all visuals are pure functions of master time t).
+  URL params: ?t=SECONDS (seek) · &paused=1 (hold frame) · &clean=1 (hide controls)
+-->
+<title>Attention Is All You Need — explained</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #05070c; overflow: hidden; }
+  #stage { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; cursor: pointer; }
+  #bar {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
+    display: flex; align-items: center; gap: 14px;
+    padding: 10px 18px 12px;
+    background: linear-gradient(to top, rgba(3,5,9,.92), rgba(3,5,9,0));
+    font: 13px/1.2 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    color: #aeb8c9; transition: opacity .4s; user-select: none; -webkit-user-select: none;
+  }
+  #bar.hidden { opacity: 0; pointer-events: none; }
+  #playBtn {
+    width: 40px; height: 40px; border-radius: 50%; border: 1px solid rgba(255,255,255,.18);
+    background: rgba(20,28,44,.85); color: #ffd45e; cursor: pointer; flex: none;
+    font-size: 15px; display: flex; align-items: center; justify-content: center;
+  }
+  #playBtn:hover { background: rgba(34,45,68,.95); }
+  #clock { min-width: 86px; text-align: center; font-variant-numeric: tabular-nums; }
+  #track { position: relative; flex: 1; height: 26px; cursor: pointer; }
+  #track .rail, #track .fill {
+    position: absolute; left: 0; top: 11px; height: 4px; border-radius: 2px;
+  }
+  #track .rail { right: 0; background: rgba(255,255,255,.14); }
+  #track .fill { background: #ffd45e; width: 0; }
+  #track .tick { position: absolute; top: 9px; width: 2px; height: 8px; background: rgba(255,255,255,.35); border-radius: 1px; }
+  #chapname { min-width: 150px; text-align: right; letter-spacing: .08em; font-size: 11px; text-transform: uppercase; color: #7f8b9f; }
+</style>
+
+<div id="stage"><canvas id="cv"></canvas></div>
+<div id="bar">
+  <button id="playBtn" aria-label="play/pause">&#9654;</button>
+  <div id="clock">0:00 / 0:00</div>
+  <div id="track"><div class="rail"></div><div class="fill" id="fill"></div></div>
+  <div id="chapname" id="chapname"></div>
+</div>
+
+<script>
+'use strict';
+/* ============================== tiny toolkit ============================== */
+const W = 1920, H = 1080;                      // virtual resolution
+const TAU = Math.PI * 2;
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const lerp  = (a, b, u) => a + (b - a) * u;
+const seg   = (t, a, b) => clamp((t - a) / (b - a), 0, 1);   // 0→1 across [a,b]
+const eio   = u => u < .5 ? 4*u*u*u : 1 - Math.pow(-2*u + 2, 3)/2;  // easeInOutCubic
+const eo    = u => 1 - Math.pow(1 - u, 3);                            // easeOutCubic
+const eb    = u => { const c = 1.70158; return 1 + (c+1)*Math.pow(u-1,3) + c*Math.pow(u-1,2); }; // easeOutBack
+const pulse = (t, p) => .5 + .5 * Math.sin(t * TAU / p);
+function fadeInOut(t, a, b, r=0.4) { return Math.min(seg(t,a,a+r), 1 - seg(t,b-r,b)); }
+function rng(seed){ let s = seed>>>0; return () => { s|=0; s=s+0x6D2B79F5|0; let x=Math.imul(s^s>>>15,1|s); x=x+Math.imul(x^x>>>7,61|x)^x; return ((x^x>>>14)>>>0)/4294967296; }; }
+
+const FONT = '-apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+const SERIF = 'Georgia, "Times New Roman", serif';
+const C = {
+  bg:     '#0d1220',
+  ink:    '#e9edf5',   // primary text
+  dim:    '#93a0b4',   // secondary text
+  faint:  '#4c586e',
+  word:   '#5ab8ff',   // tokens / language
+  wordBg: '#14283e',
+  mem:    '#b48cff',   // memory / RNN
+  bad:    '#ff7a66',   // problems
+  gold:   '#ffd45e',   // attention / highlight
+  teal:   '#3fd6bc',   // transformer / solution
+  green:  '#7ade8a',
+};
+
+let g; // 2d context (set in boot)
+
+function text(str, x, y, { size=32, color=C.ink, align='center', weight=400, font=FONT, alpha=1, letter=0, baseline='middle' } = {}) {
+  if (alpha <= 0) return;
+  g.save();
+  g.globalAlpha *= clamp(alpha,0,1);
+  g.fillStyle = color;
+  g.font = `${weight} ${size}px ${font}`;
+  g.textAlign = align; g.textBaseline = baseline;
+  if (letter) {
+    // manual letter-spacing (canvas letterSpacing not everywhere)
+    const chars = [...str]; let widths = chars.map(c => g.measureText(c).width);
+    let total = widths.reduce((a,b)=>a+b,0) + letter*(chars.length-1);
+    let cx = align==='center' ? x-total/2 : align==='right' ? x-total : x;
+    g.textAlign = 'left';
+    for (let i=0;i<chars.length;i++){ g.fillText(chars[i], cx, y); cx += widths[i]+letter; }
+  } else g.fillText(str, x, y);
+  g.restore();
+}
+
+function rr(x, y, w, h, r) { // rounded rect path
+  r = Math.min(r, w/2, h/2);
+  g.beginPath();
+  g.moveTo(x+r, y);
+  g.arcTo(x+w, y, x+w, y+h, r); g.arcTo(x+w, y+h, x, y+h, r);
+  g.arcTo(x, y+h, x, y, r);     g.arcTo(x, y, x+w, y, r);
+  g.closePath();
+}
+
+function panel(x, y, w, h, { fill='rgba(16,23,40,.6)', stroke='rgba(255,255,255,.08)', r=18, alpha=1 } = {}) {
+  if (alpha<=0) return;
+  g.save(); g.globalAlpha *= alpha;
+  rr(x, y, w, h, r); g.fillStyle = fill; g.fill();
+  g.lineWidth = 1.5; g.strokeStyle = stroke; g.stroke();
+  g.restore();
+}
+
+/* --------- word chips ---------- */
+const _layoutCache = new Map();
+function chipLayout(words, size, gap, padX) {
+  const key = words.join('') + '|' + size + '|' + gap + '|' + padX;
+  if (_layoutCache.has(key)) return _layoutCache.get(key);
+  g.font = `500 ${size}px ${FONT}`;
+  const ws = words.map(w => Math.ceil(g.measureText(w).width) + padX*2);
+  const total = ws.reduce((a,b)=>a+b,0) + gap*(words.length-1);
+  const out = { ws, total };
+  _layoutCache.set(key, out);
+  return out;
+}
+// returns array of {x,y,w,h,cx,cy,word}
+function chipRow(words, cx, cy, { size=30, gap=12, padX=14, padY=10 } = {}) {
+  const { ws, total } = chipLayout(words, size, gap, padX);
+  const h = size + padY*2;
+  let x = cx - total/2;
+  return words.map((w,i)=>{ const o = { word:w, x, y:cy-h/2, w:ws[i], h, cx:x+ws[i]/2, cy }; x += ws[i]+gap; return o; });
+}
+function drawChip(c, { alpha=1, pop=1, bg=C.wordBg, border='rgba(90,184,255,.35)', color=C.ink, size=30, glow=0, glowColor=C.gold, weight=500, dim=false } = {}) {
+  if (alpha<=0 || pop<=0) return;
+  g.save();
+  g.globalAlpha *= clamp(alpha,0,1);
+  const s = lerp(.6, 1, clamp(pop,0,1));
+  g.translate(c.cx, c.cy); g.scale(s, s); g.translate(-c.cx, -c.cy);
+  if (glow>0){ g.shadowColor = glowColor; g.shadowBlur = 26*glow; }
+  rr(c.x, c.y, c.w, c.h, 10);
+  g.fillStyle = bg; g.fill();
+  g.shadowBlur = 0;
+  g.lineWidth = 1.5; g.strokeStyle = border; g.stroke();
+  g.fillStyle = dim ? C.dim : color;
+  g.font = `${weight} ${size}px ${FONT}`;
+  g.textAlign='center'; g.textBaseline='middle';
+  g.fillText(c.word, c.cx, c.cy+1);
+  g.restore();
+}
+
+/* arc between two chips (drawn above them) */
+function arc(a, b, { lift=null, width=3, color=C.gold, alpha=1, draw=1, glow=0, below=false } = {}) {
+  if (alpha<=0 || draw<=0) return;
+  const y1 = below ? a.y+a.h+4 : a.y-4, y2 = below ? b.y+b.h+4 : b.y-4;
+  const x1=a.cx, x2=b.cx;
+  const d = Math.abs(x2-x1);
+  const l = (lift ?? clamp(d*0.30, 40, 220)) * (below ? -1 : 1);
+  g.save(); g.globalAlpha *= clamp(alpha,0,1);
+  if (glow>0){ g.shadowColor=color; g.shadowBlur=18*glow; }
+  g.strokeStyle=color; g.lineWidth=width; g.lineCap='round';
+  const N = Math.max(2, Math.ceil(24*draw));
+  g.beginPath();
+  for (let i=0;i<=N;i++){
+    const u = (i/N)*clamp(draw,0,1);
+    const x = lerp(x1,x2,u);
+    const y = lerp(y1,y2,u) - l*4*u*(1-u);
+    i?g.lineTo(x,y):g.moveTo(x,y);
+  }
+  g.stroke(); g.restore();
+}
+
+function meterBar(x, y, w, h, frac, { color=C.gold, label=null, alpha=1, track='rgba(255,255,255,.12)' } = {}) {
+  if (alpha<=0) return;
+  g.save(); g.globalAlpha *= alpha;
+  rr(x,y,w,h,h/2); g.fillStyle = track; g.fill();
+  if (frac>0.005){ rr(x,y,Math.max(h,w*clamp(frac,0,1)),h,h/2); g.fillStyle = color; g.fill(); }
+  if (label) text(label, x+w/2, y-18, { size:22, color:C.dim });
+  g.restore();
+}
+
+function kicker(label, alpha) {
+  if (alpha<=0) return;
+  g.save(); g.globalAlpha *= alpha;
+  g.fillStyle = C.gold; g.fillRect(96, 74, 6, 30);
+  text(label, 122, 89, { size:24, color:C.dim, align:'left', weight:600, letter:5 });
+  g.restore();
+}
+
+/* caption band (lower third) */
+function caption(str, alpha) {
+  if (alpha<=0) return;
+  const maxW = 1440, size = 38, lh = 52;
+  g.font = `500 ${size}px ${FONT}`;
+  const words = str.split(' '); const lines=[]; let line='';
+  for (const w of words){ const tryL = line?line+' '+w:w; if (g.measureText(tryL).width>maxW && line){ lines.push(line); line=w; } else line=tryL; }
+  lines.push(line);
+  const bandH = lines.length*lh + 40;
+  const y0 = 1006 - bandH;
+  const wMax = Math.max(...lines.map(l=>g.measureText(l).width));
+  g.save(); g.globalAlpha *= clamp(alpha,0,1);
+  panel(W/2-wMax/2-36, y0, wMax+72, bandH, { fill:'rgba(6,10,19,.78)', r:16, stroke:'rgba(255,255,255,.07)' });
+  lines.forEach((l,i)=> text(l, W/2, y0+34+i*lh, { size, weight:500 }));
+  g.restore();
+}
+
+/* ============================== scene helpers ============================== */
+const SENT_CAT = 'The cat , which had chased a red dot around the living room all afternoon , was'.split(' ');
+// display words for the cat sentence (punctuation merged for chips)
+const CAT_WORDS = ['The','cat,','which','had','chased','a','red','dot','around','the','living','room','all','afternoon,','was','tired.'];
+const ANIMAL_A = ['The','animal',"didn't",'cross','the','street','because','it','was','too','tired.'];
+const ANIMAL_B = ['The','animal',"didn't",'cross','the','street','because','it','was','too','wide.'];
+const IDX_ANIMAL = 1, IDX_STREET = 5, IDX_IT = 7, IDX_LAST = 10;
+
+/* memory tube: layers, newest pushed on top, older compressed */
+function memoryLayers(step, decay=0.80) {
+  // returns array of {frac, color} bottom→top for words 0..step
+  const raw = [];
+  for (let i=0;i<=step;i++) raw.push(Math.pow(decay, step-i));
+  const sum = raw.reduce((a,b)=>a+b,0);
+  return raw.map((v,i)=>({ frac: v/sum, color: tubeColor(i), idx:i }));
+}
+const TUBE_OTHERS = ['#8f7cc9','#c98d77','#7ba887','#c9b06a','#7fb0bf','#bd8cae','#9aa0c9','#b3a08a'];
+const tubeColor = i => i===1 ? '#5ab8ff' : TUBE_OTHERS[i % TUBE_OTHERS.length];   // 'cat' is always bright blue
+
+function gpuGrid(x, y, cols, rows, cell, gapc, litFn, { baseAlpha=1 } = {}) {
+  for (let r=0;r<rows;r++) for (let c=0;c<cols;c++){
+    const lit = litFn(c,r);
+    rr(x+c*(cell+gapc), y+r*(cell+gapc), cell, cell, 4);
+    g.globalAlpha = baseAlpha * (lit? 1 : .5);
+    g.fillStyle = lit ? C.teal : 'rgba(255,255,255,.07)';
+    g.fill();
+  }
+  g.globalAlpha = 1;
+}
+
+/* starfield / web for title + finale */
+function makeWeb(seed, n, x0,y0,x1,y1) {
+  const R = rng(seed); const pts = [];
+  for (let i=0;i<n;i++) pts.push({ x: lerp(x0,x1,R()), y: lerp(y0,y1,R()), p: R(), s: 1.2+R()*2.2 });
+  const links = [];
+  for (let i=0;i<n;i++){
+    // link to 2 nearest
+    const d = pts.map((q,j)=>({ j, dd:(q.x-pts[i].x)**2+(q.y-pts[i].y)**2 })).sort((a,b)=>a.dd-b.dd);
+    for (let k=1;k<=2;k++) if (d[k] && i<d[k].j) links.push([i,d[k].j, R()]);
+  }
+  return { pts, links };
+}
+function drawWeb(web, t, alpha, { color='90,184,255', gold=false, drift=6 } = {}) {
+  if (alpha<=0) return;
+  g.save(); g.globalAlpha *= alpha;
+  const P = web.pts.map(p=>({ x:p.x + Math.sin(t*.5+p.p*TAU)*drift, y:p.y + Math.cos(t*.4+p.p*TAU)*drift, s:p.s, p:p.p }));
+  for (const [i,j,r] of web.links){
+    const tw = .25+.45*pulse(t, 3+r*4);
+    g.strokeStyle = `rgba(${gold && r>.72 ? '255,212,94' : color},${tw*.5})`;
+    g.lineWidth = r>.72&&gold ? 2 : 1;
+    g.beginPath(); g.moveTo(P[i].x,P[i].y); g.lineTo(P[j].x,P[j].y); g.stroke();
+  }
+  for (const p of P){
+    g.fillStyle = `rgba(${color},${.5+.5*pulse(t,2+p.p*3)})`;
+    g.beginPath(); g.arc(p.x,p.y,p.s,0,TAU); g.fill();
+  }
+  g.restore();
+}
+
+/* ============================== SCENES ============================== */
+const SCENES = [];
+
+/* ----- S0 · TITLE (17s) ----- */
+const webTitle = { v:null };
+SCENES.push({
+  key:'title', kicker:null, dur:17,
+  captions: [
+    [0.6, 5.6,  'In 2017, eight researchers at Google published a paper with an audacious title.'],
+    [5.9, 11.2, 'It proposed a new machine-learning design they called the Transformer.'],
+    [11.5, 16.6,'That design became the engine of modern AI. This is its story — no math required.'],
+  ],
+  draw(t) {
+    if (!webTitle.v) webTitle.v = makeWeb(7, 46, 140, 120, W-140, 700);
+    text('2017', W/2, 400, { size:280, font:SERIF, weight:700, color:'#2a3550', alpha:.16*fadeInOut(t,.4,5.6,1.2) });
+    drawWeb(webTitle.v, t, .6*seg(t,0,2)*(1-.35*seg(t,5,7)), { gold:true });
+    const a1 = seg(t, 5.2, 6.4);
+    if (a1>0) {
+      const yT = 400;
+      text('Attention Is All You Need', W/2, yT, { size:96, font:SERIF, weight:700, alpha:a1, color:C.ink });
+      const a2 = seg(t, 6.4, 7.4);
+      text('Vaswani · Shazeer · Parmar · Uszkoreit · Jones · Gomez · Kaiser · Polosukhin', W/2, yT+86, { size:27, color:C.dim, alpha:a2 });
+      text('NeurIPS 2017  ·  arXiv 1706.03762', W/2, yT+130, { size:24, color:C.faint, alpha:a2 });
+      const a3 = seg(t, 11.5, 12.5);
+      g.save(); g.globalAlpha = a3;
+      const badge = 'THE TRANSFORMER';
+      g.font=`600 26px ${FONT}`;
+      const bw = g.measureText(badge).width + 30*2 + 5*badge.length;
+      panel(W/2-bw/2, yT+180, bw, 56, { fill:'rgba(63,214,188,.10)', stroke:'rgba(63,214,188,.45)', r:28 });
+      text(badge, W/2, yT+209, { size:26, weight:600, color:C.teal, letter:5 });
+      g.restore();
+    }
+  }
+});
+
+/* ----- S1 · BACKGROUND: tokens & relationships (31s) ----- */
+SCENES.push({
+  key:'tokens', kicker:'BACKGROUND', dur:31,
+  captions: [
+    [0.6, 7.2,  'To a computer, a sentence is a sequence of pieces called tokens.'],
+    [7.6, 15.2, 'A language model has one core job: use the words so far to work out what comes next.'],
+    [15.6, 23.2,'Doing that well means understanding how words relate — who did what to whom.'],
+    [23.6, 30.4,'The hard part was never storing words. It was connecting them.'],
+  ],
+  draw(t) {
+    const words = ['The','cat','sat','on','the','mat'];
+    const chips = chipRow(words, W/2, 430, { size:44, gap:22, padX:24, padY:16 });
+    chips.forEach((c,i)=>{
+      const u = seg(t, .4+i*.28, 1.0+i*.28);
+      drawChip(c, { pop: eb(u), alpha: u, size:44 });
+    });
+    // beat 2: prediction slot
+    const b2 = seg(t, 8.0, 9.0), b2out = 1-seg(t,15.2,16.0);
+    if (b2>0 && b2out>0) {
+      const a = b2*b2out;
+      const last = chips[chips.length-1];
+      const slot = { word:'?', x: last.x + last.w + 26, y: last.y, w: 84, h: last.h, cx: last.x+last.w+26+42, cy: last.cy };
+      drawChip(slot, { alpha:a, pop:1, bg:'rgba(255,212,94,.10)', border:'rgba(255,212,94,.6)', color:C.gold, size:44, glow:.4*pulse(t,1.6) });
+      // candidates
+      const cands = [['mat',.82],['sofa',.09],['floor',.06]];
+      const py = 570;
+      cands.forEach((cd,i)=>{
+        const aa = a * seg(t, 9.2+i*.5, 9.9+i*.5);
+        const yy = py + i*76;
+        panel(W/2-270, yy, 540, 60, { alpha:aa, r:12 });
+        text(cd[0], W/2-226, yy+30, { size:30, align:'left', alpha:aa, color: i===0?C.gold:C.dim, weight: i===0?600:400 });
+        meterBar(W/2-60, yy+23, 240, 14, cd[1]*seg(t, 9.6+i*.5, 10.9+i*.5), { color: i===0?C.gold:C.faint, alpha:aa });
+        text(Math.round(cd[1]*100)+'%', W/2+226, yy+30, { size:24, align:'right', alpha:aa, color: i===0?C.gold:C.dim });
+      });
+    }
+    // beat 3: relation arcs
+    const b3 = seg(t, 16.0, 17.4);
+    if (b3>0) {
+      const a2 = seg(t,17.0,18.4), a3 = seg(t,18.0,19.4);
+      arc(chips[1], chips[2], { color:C.gold,  width:4, alpha:b3, draw:b3, glow:.5 });
+      arc(chips[2], chips[5], { color:C.teal,  width:4, alpha:a2, draw:a2, glow:.5 });
+      arc(chips[1], chips[5], { color:C.mem,   width:3, alpha:a3, draw:a3, glow:.4, lift:200 });
+      text('who sat?', (chips[1].cx+chips[2].cx)/2, chips[1].y-4-52-22, { size:24, color:C.gold, alpha:seg(t,16.6,17.4) });
+      text('sat where?', (chips[2].cx+chips[5].cx)/2, chips[2].y-4-124-22, { size:24, color:C.teal, alpha:seg(t,17.6,18.4) });
+    }
+    // beat 4 emphasis
+    const b4 = seg(t, 24.0, 25.0);
+    if (b4>0) text('meaning lives in the connections', W/2, 700, { size:34, color:C.dim, alpha:b4*fadeInOut(t,24,30.6,.8), letter:1 });
+  }
+});
+
+/* ----- S2 · THE OLD WAY: recurrent reading (41s) ----- */
+SCENES.push({
+  key:'rnn', kicker:'BACKGROUND · THE OLD WAY', dur:41,
+  captions: [
+    [0.6, 8.0,  'For years, the best models read the way we do: strictly one word at a time.'],
+    [8.4, 17.0, 'They carry a single running memory, rewritten a little at every word — a summary of everything so far.'],
+    [17.4, 26.6,'But each rewrite crowds out a bit of what came before. Early words slowly fade.'],
+    [27.0, 40.4,"By the time we need it, 'cat' has been squeezed through thirteen rewrites. The link survives — barely."],
+  ],
+  draw(t) {
+    const chips = chipRow(CAT_WORDS, W/2, 620, { size:27, gap:9, padX:11, padY:10 });
+    // reading progress: which word is the reader on?
+    const readSpan = [1.5, 34];   // reader traverses words over this window
+    const prog = clamp((t-readSpan[0])/(readSpan[1]-readSpan[0]), 0, 1);
+    const fIdx = prog * (CAT_WORDS.length-1);
+    const idx = Math.floor(fIdx);
+    chips.forEach((c,i)=>{
+      const passed = i < fIdx;
+      const cur = i === idx;
+      drawChip(c, {
+        alpha: .35 + .65*seg(t, .2+i*.06, .6+i*.06),
+        pop: 1, size: 27,
+        bg: cur ? 'rgba(255,212,94,.14)' : (i===1 ? 'rgba(90,184,255,.16)' : C.wordBg),
+        border: cur ? 'rgba(255,212,94,.75)' : (i===1 ? 'rgba(90,184,255,.7)' : 'rgba(90,184,255,.25)'),
+        dim: !passed && !cur,
+        glow: cur ? .5 : 0,
+      });
+    });
+    // reader dot gliding over current chip
+    if (t>readSpan[0] && t<readSpan[1]+1) {
+      const cx = lerp(chips[idx].cx, chips[Math.min(idx+1,chips.length-1)].cx, fIdx-idx);
+      g.save();
+      g.fillStyle = C.gold; g.shadowColor=C.gold; g.shadowBlur=16;
+      g.beginPath(); g.arc(cx, chips[0].y-26, 9, 0, TAU); g.fill();
+      g.restore();
+      text('reads left → right, one at a time', W/2, 700, { size:24, color:C.faint, alpha:fadeInOut(t,2,12,1) });
+    }
+    // memory tube
+    const tubeX = W/2-80, tubeY = 165, tubeW = 160, tubeH = 360;
+    const aT = seg(t, 3.5, 5);
+    if (aT>0) {
+      g.save(); g.globalAlpha = aT;
+      text('MEMORY', tubeX+tubeW/2, tubeY-38, { size:22, color:C.dim, letter:4, weight:600 });
+      rr(tubeX-6, tubeY-6, tubeW+12, tubeH+12, 22); g.strokeStyle='rgba(255,255,255,.25)'; g.lineWidth=2; g.stroke();
+      const layers = memoryLayers(Math.max(0,idx));
+      let yy = tubeY + tubeH, catY=null, catH=0;
+      g.save();
+      rr(tubeX, tubeY, tubeW, tubeH, 18); g.clip();
+      layers.forEach(L=>{
+        const hh = L.frac * tubeH;
+        if (L.idx===1){ catY = yy-hh/2; catH = hh; g.shadowColor='#5ab8ff'; g.shadowBlur=14; }
+        g.fillStyle = L.color; g.globalAlpha = aT * (L.idx===1 ? 1 : .55);
+        g.fillRect(tubeX, yy-hh, tubeW, hh);
+        g.shadowBlur = 0;
+        yy -= hh;
+      });
+      g.restore();
+      // cat layer callout
+      if (idx>=1 && catY!==null) {
+        const aC = seg(t, 8, 9.5);
+        g.globalAlpha = aT*aC;
+        g.strokeStyle = C.word; g.lineWidth=2;
+        g.beginPath(); g.moveTo(tubeX-14, catY); g.lineTo(tubeX-74, catY); g.stroke();
+        text("'cat'", tubeX-88, catY, { size:26, color:C.word, align:'right', weight:600 });
+        const pct = Math.max(1, Math.round(100*catH/tubeH));
+        text(pct+'% of memory', tubeX-88, catY+32, { size:21, color:C.faint, align:'right' });
+      }
+      g.restore();
+      // droplet from current word into tube
+      if (t>readSpan[0] && t<readSpan[1]) {
+        const dropU = (fIdx-idx);
+        const sx = chips[idx].cx, sy = chips[idx].y-8;
+        const ex = tubeX+tubeW/2, ey = tubeY+tubeH-8;
+        const u = eio(dropU);
+        const dx = lerp(sx,ex,u), dy = lerp(sy,ey,u) - 110*Math.sin(Math.PI*u);
+        g.save(); g.globalAlpha = .9*Math.sin(Math.PI*clamp(dropU,.02,.98));
+        g.fillStyle = tubeColor(idx);
+        g.beginPath(); g.arc(dx, dy, 8, 0, TAU); g.fill(); g.restore();
+      }
+    }
+    // final beat: the long way back — arc dips below the sentence
+    const b4 = seg(t, 34.5, 36);
+    if (b4>0) {
+      arc(chips[1], chips[15], { color:C.word, width:4, alpha:b4*.95, draw:b4, glow:.5, lift:150, below:true });
+      text('13 rewrites later — 1% of the memory left', W/2, 845, { size:25, color:C.word, alpha:seg(t,35.5,36.5) });
+    }
+  }
+});
+
+/* ----- S3 · THE PROBLEM (42s) ----- */
+SCENES.push({
+  key:'problem', kicker:'THE PROBLEM', dur:42,
+  captions: [
+    [0.6, 6.8,  'By 2017, this way of reading had run into two walls.'],
+    [7.2, 15.6, 'Wall one: distance. Meaning gets passed along hop by hop — like a game of telephone.'],
+    [16.0, 23.6,'Every hop loses a little. The farther apart two related words sit, the weaker their link.'],
+    [24.0, 31.6,'Wall two: waiting. Word 47 cannot be processed until word 46 is finished.'],
+    [32.0, 41.4,'Modern AI chips can do thousands of things at once — the chain kept them idle. The chain was the bottleneck.'],
+  ],
+  draw(t) {
+    const topY = 170;
+    // ---- Wall 1 panel ----
+    const a1 = seg(t, 6.6, 7.8);
+    const P1 = { x: 120, y: topY, w: 810, h: 560 };
+    if (a1>0) {
+      panel(P1.x, P1.y, P1.w, P1.h, { alpha:a1 });
+      text('WALL 1 · DISTANCE', P1.x+40, P1.y+52, { size:26, weight:700, color:C.bad, align:'left', letter:3, alpha:a1 });
+      // telephone relay: cat → ... → tired
+      const n = 8;
+      const y = P1.y+250;
+      const x0 = P1.x+90, x1 = P1.x+P1.w-90;
+      const hopWindow = [9, 20];   // signal travels
+      const hp = clamp((t-hopWindow[0])/(hopWindow[1]-hopWindow[0]),0,1);
+      const sIdx = hp * (n-1);
+      for (let i=0;i<n;i++){
+        const x = lerp(x0,x1,i/(n-1));
+        const passed = i<=sIdx;
+        const strength = Math.pow(.62, i);
+        const rad = 17*(.5+.5*strength);
+        g.save(); g.globalAlpha = a1;
+        if (passed){ g.shadowColor=C.word; g.shadowBlur=16*strength; }
+        g.fillStyle = passed ? `rgba(90,184,255,${.15+.85*strength})` : 'rgba(255,255,255,.10)';
+        g.beginPath(); g.arc(x, y, passed?rad:17*.6, 0, TAU); g.fill();
+        g.restore();
+        if (i<n-1){
+          g.save(); g.globalAlpha=a1*(i<sIdx?1:.3);
+          g.strokeStyle = i<sIdx? `rgba(90,184,255,${.15+.6*Math.pow(.62,i)})` : 'rgba(255,255,255,.12)';
+          g.lineWidth=3; g.beginPath(); g.moveTo(x+22,y); g.lineTo(lerp(x0,x1,(i+1)/(n-1))-22,y); g.stroke(); g.restore();
+        }
+      }
+      text('“cat”', x0, y+44, { size:26, color:C.word, weight:600, alpha:a1 });
+      text('“…was tired”', x1, y+44, { size:26, color:C.dim, alpha:a1 });
+      // the message itself, degrading hop by hop (game of telephone)
+      const MSGS = ['cat','cat','ca–','c––','– ––','– ?–','???','???'];
+      if (t>hopWindow[0]-.5 && a1>0){
+        const mi = Math.round(sIdx);
+        const mx = lerp(x0, x1, clamp(sIdx/(n-1),0,1));
+        const strength = Math.pow(.62, sIdx);
+        const bw2 = 120, bh2 = 54;
+        g.save(); g.globalAlpha = a1*seg(t,8.5,9.5);
+        panel(mx-bw2/2, y-118, bw2, bh2, { fill:'rgba(20,40,62,.9)', stroke:`rgba(90,184,255,${.2+.6*strength})`, r:12 });
+        g.beginPath(); g.moveTo(mx-8, y-64); g.lineTo(mx+8, y-64); g.lineTo(mx, y-46); g.closePath();
+        g.fillStyle='rgba(20,40,62,.9)'; g.fill();
+        text('“'+MSGS[Math.min(mi,MSGS.length-1)]+'”', mx, y-118+bh2/2, { size:27, color:`rgba(233,237,245,${.35+.65*strength})`, weight:600 });
+        g.restore();
+      }
+      // strength meter
+      const sNow = Math.pow(.62, sIdx);
+      meterBar(P1.x+90, y+120, P1.w-180, 18, sNow, { color: sNow>.5?C.word:C.bad, alpha:a1*seg(t,9.5,10.5) });
+      text('how much of “cat” survives', P1.x+P1.w/2, y+95, { size:22, color:C.faint, alpha:a1*seg(t,9.5,10.5) });
+      text(Math.max(1,Math.round(sNow*100))+'%', P1.x+P1.w-40, y+129, { size:24, color:sNow>.5?C.word:C.bad, align:'right', alpha:a1*seg(t,9.5,10.5), weight:700 });
+      text('every hop degrades the message', P1.x+P1.w/2, y+190, { size:24, color:C.dim, alpha:seg(t,16.5,18) });
+    }
+    // ---- Wall 2 panel ----
+    const a2 = seg(t, 23.6, 24.8);
+    const P2 = { x: 990, y: topY, w: 810, h: 560 };
+    if (a2>0) {
+      panel(P2.x, P2.y, P2.w, P2.h, { alpha:a2 });
+      text('WALL 2 · WAITING', P2.x+40, P2.y+52, { size:26, weight:700, color:C.bad, align:'left', letter:3, alpha:a2 });
+      // step counter
+      const step = Math.min(99, Math.floor(seg(t,25,40)*72)+27);
+      text('processing word', P2.x+300, P2.y+140, { size:26, color:C.dim, align:'right', alpha:a2 });
+      text(String(step), P2.x+340, P2.y+143, { size:52, color:C.gold, align:'left', weight:700, alpha:a2 });
+      text('of 100 — one at a time', P2.x+430, P2.y+140, { size:26, color:C.dim, align:'left', alpha:a2 });
+      // GPU grid: one lit cell wandering
+      const cols=16, rows=6, cell=38, gp=8;
+      const gx = P2.x+(P2.w-(cols*(cell+gp)-gp))/2, gy=P2.y+215;
+      g.save(); g.globalAlpha=a2;
+      gpuGrid(gx, gy, cols, rows, cell, gp, (c,r)=> (r*cols+c) === (step % (cols*rows)));
+      g.restore();
+      text('one core busy · '+(cols*rows-1)+' cores idle', P2.x+P2.w/2, gy+rows*(cell+gp)-gp+42, { size:24, color:C.bad, alpha:seg(t,33,34.5) });
+    }
+    // closing: bottleneck chain pulse
+    const a3 = seg(t, 37.5, 39);
+    if (a3>0) {
+      const y=790;
+      g.save(); g.globalAlpha = a3;
+      for (let i=0;i<22;i++){
+        const x = lerp(240, W-240, i/21);
+        const hot = pulse(t*1.4 - i*.22, 2.2);
+        g.fillStyle = `rgba(255,122,102,${.25+.55*hot})`;
+        g.beginPath(); g.arc(x, y, 11, 0, TAU); g.fill();
+        if (i<21){ g.strokeStyle=`rgba(255,122,102,.4)`; g.lineWidth=3; g.beginPath(); g.moveTo(x+14,y); g.lineTo(lerp(240,W-240,(i+1)/21)-14,y); g.stroke(); }
+      }
+      g.restore();
+    }
+  }
+});
+
+/* ----- S4 · THE IDEA: attention (42s) ----- */
+SCENES.push({
+  key:'idea', kicker:'THE IDEA', dur:42,
+  captions: [
+    [0.6, 7.2,  "The paper's radical move: get rid of the chain entirely."],
+    [7.6, 15.0, 'Instead, every word connects directly to every other word. The mechanism is called attention.'],
+    [15.4, 22.2,"Attention wasn't new — it was a helper bolted onto the chain. The bet: drop the chain, keep only attention."],
+    [22.6, 28.2, "Watch it work. In this sentence — what does 'it' refer to?"],
+    [28.6, 34.6, "You resolved that instantly: 'it' is the animal. Attention computes exactly that link."],
+    [35.0, 41.4, "Change one word, and 'it' snaps to the street. Relevance, recomputed on the fly."],
+  ],
+  draw(t) {
+    // chain: hold + tremble (0–3), then snap apart left→right (3–7)
+    if (t<8.5) {
+      const y=390; const n=14; const dis = seg(t,3.0,6.6);
+      const tremble = fadeInOut(t,1.2,3.2,.4);
+      for (let i=0;i<n;i++){
+        const u = i/(n-1);
+        const x = lerp(360, W-360, u) + tremble*3.5*Math.sin(t*22+i*2.4);
+        const gone = seg(dis, u*.72, u*.72+.28);
+        if (gone>=1) continue;
+        g.save(); g.globalAlpha = (1-gone)*(1-seg(t,7,8.5));
+        g.translate(x, y + gone*gone*220); g.rotate(gone*(i%2?1:-1)*1.1);
+        g.fillStyle = 'rgba(180,140,255,.8)';
+        g.beginPath(); g.arc(0,0,13,0,TAU); g.fill();
+        g.restore();
+        if (i<n-1 && dis < u*.72){
+          g.save(); g.globalAlpha=(1-seg(t,7,8.5))*.85;
+          g.strokeStyle='rgba(180,140,255,.5)'; g.lineWidth=3;
+          g.beginPath(); g.moveTo(x+16,y); g.lineTo(lerp(360,W-360,(i+1)/(n-1))-16,y); g.stroke();
+          g.restore();
+        }
+      }
+      text('the chain', W/2, 300, { size:26, color:C.mem, alpha:fadeInOut(t,1,6,.8) });
+    }
+    // sentence + full connectivity (7.6–15) then demo
+    const showA = seg(t, 8.0, 9.2);
+    if (showA>0) {
+      const flip = seg(t, 35.2, 36.2);           // tired → wide word swap
+      const words = flip<0.5 ? ANIMAL_A : ANIMAL_B;
+      const chips = chipRow(words, W/2, 540, { size:40, gap:16, padX:19, padY:14 });
+      // all-pairs web — the headline visual: every word sees every word
+      const webA = seg(t,9,11.5) * (1 - .8*seg(t,22.6,24.5));
+      if (webA>0) {
+        for (let i=0;i<chips.length;i++) for (let j=i+1;j<chips.length;j++){
+          const wave = seg(t, 9 + (i+j)*.09, 10 + (i+j)*.09);
+          const shimmer = .75 + .25*pulse(t, 2.4 + ((i*3+j)%5)*.5);
+          arc(chips[i], chips[j], { color:'rgba(120,200,255,1)', width:2, alpha:.42*webA*wave*shimmer, draw:wave, glow:.15 });
+        }
+      }
+      // suspense: 'it' lights up while the question is asked (22.6–27.5)
+      const ask = fadeInOut(t, 23.2, 28.3, .6);
+      // focus lines from "it"
+      const foc = seg(t, 27.5, 29.5);
+      const focB = seg(t, 36.0, 38.0);   // after flip: to street
+      chips.forEach((c,i)=>{
+        let hl = 0, hlc = C.gold;
+        if (i===IDX_IT && (foc>0 || ask>0)) { hl = Math.max(.8*foc, ask*(.55+.35*pulse(t,1.1))); hlc=C.gold; }
+        if (foc>0 && flip<.5 && i===IDX_ANIMAL) { hl = foc; hlc=C.teal; }
+        if (focB>0 && flip>=.5 && i===IDX_STREET) { hl = focB; hlc=C.teal; }
+        const isFlipWord = i===IDX_LAST;
+        let popW = 1;
+        if (isFlipWord) popW = flip<.5 ? 1 : eb(seg(t,35.2,36.0));
+        drawChip(c, {
+          alpha: showA, pop: popW, size:40,
+          bg: hl>0 ? (hlc===C.gold?'rgba(255,212,94,.13)':'rgba(63,214,188,.13)') : (isFlipWord&&flip>=.5 ? 'rgba(255,122,102,.15)' : C.wordBg),
+          border: hl>0 ? hlc : (isFlipWord&&flip>=.5 ? 'rgba(255,122,102,.7)' : 'rgba(90,184,255,.35)'),
+          glow: hl*.7,
+          glowColor: hlc,
+        });
+      });
+      if (ask>0 && foc<=0) text('?', chips[IDX_IT].cx, chips[IDX_IT].y-40, { size:38, weight:700, color:C.gold, alpha:ask*(.6+.4*pulse(t,1.1)) });
+      if (foc>0) {
+        const itC = chips[IDX_IT];
+        const tgt = flip<.5 ? chips[IDX_ANIMAL] : chips[IDX_STREET];
+        // strong line to referent, weak to others
+        chips.forEach((c,i)=>{
+          if (i===IDX_IT) return;
+          const isTgt = c===tgt;
+          const aa = (flip<.5? foc : Math.min(foc, focB>0?focB: (1-seg(t,35.0,35.6))));
+          arc(itC, c, { color: isTgt? C.gold : 'rgba(255,212,94,.9)', width: isTgt? 7 : 2.2, alpha: aa*(isTgt? .95 : .30), draw:1, glow: isTgt? .8 : 0 });
+        });
+        // weight labels
+        const pctA = flip<.5 ? '≈ 90%' : '≈ 6%';
+        const pctS = flip<.5 ? '≈ 5%' : '≈ 88%';
+        const aa2 = seg(t, 29.5, 30.5) * showA;
+        text(pctA, chips[IDX_ANIMAL].cx, chips[IDX_ANIMAL].y-132, { size:26, weight:700, color: flip<.5?C.gold:C.faint, alpha:aa2 });
+        text(pctS, chips[IDX_STREET].cx, chips[IDX_STREET].y-132, { size:26, weight:700, color: flip<.5?C.faint:C.gold, alpha:aa2 });
+        text("where 'it' looks", itC.cx, itC.cy+72, { size:24, color:C.dim, alpha:seg(t,28.5,29.5) });
+      }
+      // title flash for beat 3
+      const tf = fadeInOut(t, 15.8, 22.0, .6);
+      if (tf>0) text('“Attention is ALL you need.”', W/2, 210, { size:40, font:SERIF, weight:700, color:C.gold, alpha:tf });
+    }
+  }
+});
+
+/* ----- S5 · HOW IT WORKS (44s) ----- */
+SCENES.push({
+  key:'how', kicker:'HOW IT WORKS', dur:44,
+  captions: [
+    [0.6, 7.8,  'How does a word know where to look? Every word broadcasts three things.'],
+    [8.2, 16.2, "The question asks what it's searching for. Here, 'it' needs its owner: “who around here is a doer?”"],
+    [16.6, 25.0,'Every other word answers with its label. Question meets label — a strong match means a strong link.'],
+    [25.4, 32.6,"Content then flows in proportion. 'it' becomes mostly 'animal', with faint traces of everything else."],
+    [33.0, 38.2,'One catch: without the chain, word order is lost — so each word wears a position badge.'],
+    [38.6, 43.4,'And each word asks many questions at once, in parallel — grammar, meaning, reference.'],
+  ],
+  draw(t) {
+    /* beat 1: three cards fan out from "it" */
+    const gone = 1 - seg(t, 32.4, 33.3);         // 'it' + question card exit before badges beat
+    const itChip = { word:'it', x:W/2-46, y:168, w:92, h:64, cx:W/2, cy:200 };
+    const a0 = seg(t,.4,1.2) * gone;
+    drawChip(itChip, { alpha:a0, pop:1, size:40, bg:'rgba(255,212,94,.13)', border:C.gold, glow:.4 });
+    const cards = [
+      { label:'a QUESTION', sub:'what am I looking for?', tag:'query', color:C.gold,  x:W/2-560 },
+      { label:'a LABEL',    sub:'what am I?',             tag:'key',   color:C.word,  x:W/2 },
+      { label:'its CONTENT',sub:'what I mean',            tag:'value', color:C.teal,  x:W/2+560 },
+    ];
+    const emph = fadeInOut(t, 8.4, 16.4, .6);    // spotlight the question card during its beat
+    cards.forEach((cd,i)=>{
+      const u = seg(t, 1.6+i*.7, 2.6+i*.7);
+      if (u<=0) return;
+      const y = lerp(240, 320, eo(u));
+      const alpha = u * (i===0 ? gone : (1 - seg(t, 14.5, 16)));
+      if (alpha<=0) return;
+      const dimmed = i!==0 ? 1-.5*emph : 1;
+      g.save(); g.globalAlpha = 1;
+      if (i===0 && emph>0){ const s=1+.035*emph*pulse(t,1.5); g.translate(cd.x,y+60); g.scale(s,s); g.translate(-cd.x,-(y+60)); }
+      // connector
+      g.strokeStyle = `rgba(255,255,255,${.25*alpha*dimmed})`; g.lineWidth=2;
+      g.beginPath(); g.moveTo(W/2, itChip.cy+34); g.lineTo(cd.x, y-10); g.stroke();
+      panel(cd.x-200, y, 400, 120, { alpha:alpha*dimmed, stroke: cd.color + (i===0&&emph>.3?'aa':'55') });
+      text(cd.label, cd.x, y+38, { size:30, weight:700, color:cd.color, alpha:alpha*dimmed });
+      text('“'+cd.sub+'”', cd.x, y+76, { size:24, color:C.dim, alpha:alpha*dimmed });
+      text(cd.tag, cd.x+178, y+22, { size:19, color:C.faint, align:'right', alpha:alpha*dimmed });
+      g.restore();
+    });
+    /* beat 2-3: matching against labels */
+    const m0 = seg(t, 16.6, 17.6);
+    if (m0>0) {
+      const cands = [
+        { w:'animal', tag:'a creature — a doer', match:.92 },
+        { w:'street', tag:'a place',             match:.08 },
+        { w:'cross',  tag:'an action',           match:.12 },
+      ];
+      const y0 = 505;
+      cands.forEach((cd,i)=>{
+        const a = m0 * seg(t, 17.0+i*.8, 17.9+i*.8) * gone;
+        if (a<=0) return;
+        const yy = y0 + i*80;
+        const hot = cd.match>.5 ? seg(t, 18.4+i*.8, 20+i*.8) : 0;
+        panel(W/2-520, yy, 1040, 70, { alpha:a, stroke: hot>0 ? `rgba(255,212,94,${.1+.35*hot})` : 'rgba(255,255,255,.08)' });
+        text(cd.w, W/2-480, yy+35, { size:32, weight:600, color: cd.match>.5?C.teal:C.dim, align:'left', alpha:a });
+        text('“'+cd.tag+'”', W/2-290, yy+35, { size:24, color:C.faint, align:'left', alpha:a });
+        const mu = seg(t, 18.4+i*.8, 20+i*.8);
+        meterBar(W/2+90, yy+27, 300, 16, cd.match*mu, { color: cd.match>.5?C.gold:'rgba(255,255,255,.35)', alpha:a });
+        text(Math.round(cd.match*100*mu)+'%', W/2+470, yy+35, { size:26, align:'right', color: cd.match>.5?C.gold:C.faint, alpha:a, weight:600 });
+      });
+      text('match', W/2+240, y0-26, { size:22, color:C.faint, alpha:m0*gone*seg(t,18,19) });
+      /* beat 4: blend flows into 'it' */
+      const b4 = seg(t, 25.6, 27.0) * gone;
+      if (b4>0) {
+        const bx=W/2-260, by=y0+3*80+24, bw=520, bh=30;
+        text("what 'it' becomes:", bx-30, by+15, { size:26, color:C.dim, align:'right', alpha:b4 });
+        rr(bx,by,bw,bh,15); g.save(); g.globalAlpha=b4; g.fillStyle='rgba(255,255,255,.1)'; g.fill();
+        const fu = seg(t, 26, 28.5);
+        const wAnimal = .86*fu;
+        rr(bx,by,bw*wAnimal,bh,15); g.fillStyle=C.teal; g.fill();
+        if (fu>0.99){ rr(bx+bw*.86,by,bw*.14,bh,15); g.fillStyle='rgba(255,255,255,.28)'; g.fill(); }
+        g.restore();
+        text('mostly “animal”', bx+bw*.43, by+bh+26, { size:23, color:C.teal, alpha:b4*seg(t,27.5,28.5) });
+        text('traces of the rest', bx+bw*.93, by+bh+26, { size:23, color:C.faint, alpha:b4*seg(t,28.5,29.5) });
+      }
+    }
+    /* beat 5: position badges */
+    const p0 = seg(t, 33.4, 34.4) * (1-seg(t,38.4,39.2));
+    if (p0>0) {
+      const words = ['The','animal',"didn't",'cross','the','street','…'];
+      const chips = chipRow(words, W/2, 480, { size:34, gap:26, padX:18, padY:12 });
+      chips.forEach((c,i)=>{
+        drawChip(c, { alpha:p0, pop:1, size:34 });
+        const bu = seg(t, 34.2+i*.28, 34.9+i*.28) * (1-seg(t,38.4,39.2));
+        if (bu>0 && i<6){
+          g.save(); g.globalAlpha=bu;
+          g.fillStyle=C.gold; g.beginPath(); g.arc(c.x+c.w-4, c.y+4, 17*eb(bu), 0, TAU); g.fill();
+          text(String(i+1), c.x+c.w-4, c.y+5, { size:20, color:'#1a1a1a', weight:700 });
+          g.restore();
+        }
+      });
+      text('position badges keep the order', W/2, 590, { size:25, color:C.dim, alpha:p0*seg(t,35.5,36.5) });
+    }
+    /* beat 6: multi-head webs */
+    const h0 = seg(t, 38.8, 39.8);
+    if (h0>0) {
+      const words = ['The','animal',"didn't",'cross','the','street','because','it'];
+      const chips = chipRow(words, W/2, 560, { size:32, gap:18, padX:16, padY:12 });
+      chips.forEach(c=> drawChip(c, { alpha:h0, pop:1, size:32 }));
+      const heads = [
+        { color:'rgba(255,212,94,.75)', pairs:[[7,1],[3,1]], label:'reference', lift:1 },
+        { color:'rgba(63,214,188,.75)', pairs:[[3,5],[2,3]], label:'grammar',  lift:.68 },
+        { color:'rgba(180,140,255,.75)', pairs:[[1,5],[0,1]], label:'meaning', lift:1.18 },
+      ];
+      heads.forEach((hd,k)=>{
+        const a = h0 * seg(t, 39.4+k*.5, 40.2+k*.5);
+        hd.pairs.forEach(pr=> arc(chips[pr[0]], chips[pr[1]], { color:hd.color, width:3.5, alpha:a*.9, draw:a, lift: 88*hd.lift, glow:.3 }));
+        text(hd.label, W/2 + (k-1)*310, 388, { size:25, weight:600, color:hd.color.replace('.75','1'), alpha:a });
+      });
+    }
+  }
+});
+
+/* ----- S6 · WHY IT WINS (36s) ----- */
+SCENES.push({
+  key:'wins', kicker:'WHY IT WINS', dur:36,
+  captions: [
+    [0.6, 6.4,  'Put it together, and two superpowers appear.'],
+    [6.8, 14.6, 'Distance is gone: any word reaches any other in a single hop — 3 words back or 3,000.'],
+    [15.0, 22.8,'And nothing waits in line — every word is processed at the same time. Parallel chips finally run at full blast.'],
+    [23.2, 35.4,'Stack these attention layers into a tower and you get the Transformer. In 2017 it set translation records after just 3.5 days on 8 GPUs — a fraction of the usual cost.'],
+  ],
+  draw(t) {
+    const half = 1 - seg(t, 22.6, 24.2);   // panels leave for tower
+    if (half>0) {
+      g.save(); g.globalAlpha = half;
+      const a0 = seg(t, .6, 1.6);
+      const Pl = { x:110, y:170, w:830, h:560 }, Pr = { x:980, y:170, w:830, h:560 };
+      panel(Pl.x,Pl.y,Pl.w,Pl.h,{alpha:a0}); panel(Pr.x,Pr.y,Pr.w,Pr.h,{alpha:a0});
+      text('THE OLD CHAIN', Pl.x+Pl.w/2, Pl.y+46, { size:24, weight:700, color:C.mem, letter:3, alpha:a0 });
+      text('ATTENTION', Pr.x+Pr.w/2, Pr.y+46, { size:24, weight:700, color:C.gold, letter:3, alpha:a0 });
+      const wordsMini = ['A','B','C','D','E','F','G','H'];
+      const chL = chipRow(wordsMini, Pl.x+Pl.w/2, Pl.y+210, { size:26, gap:16, padX:14, padY:9 });
+      const chR = chipRow(wordsMini, Pr.x+Pr.w/2, Pr.y+210, { size:26, gap:16, padX:14, padY:9 });
+      chL.forEach(c=>drawChip(c,{alpha:a0,size:26})); chR.forEach(c=>drawChip(c,{alpha:a0,size:26}));
+      // left: hop-by-hop A→H
+      const hopU = seg(t, 7, 11);
+      const hIdx = hopU*(chL.length-1);
+      for (let i=0;i<chL.length-1;i++){
+        const u = clamp(hIdx-i, 0, 1);
+        if (u>0) arc(chL[i], chL[i+1], { color:C.mem, width:3, alpha:.85, draw:u, lift:46 });
+      }
+      text('7 hops', Pl.x+Pl.w/2, Pl.y+310, { size:28, color:C.mem, weight:700, alpha:seg(t,10.8,11.6) });
+      // right: single hop A→H
+      const oneU = seg(t, 11.4, 12.8);
+      arc(chR[0], chR[7], { color:C.gold, width:5, alpha:.95, draw:oneU, glow:.6, lift:120 });
+      text('1 hop — always', Pr.x+Pr.w/2, Pr.y+310, { size:28, color:C.gold, weight:700, alpha:seg(t,12.8,13.6) });
+      // beat 3: parallel — GPU rows
+      const gA = seg(t, 15.4, 16.4);
+      if (gA>0){
+        g.save(); g.globalAlpha = half*gA;
+        const cols=14, rows=3, cell=34, gp=7;
+        const gridH = rows*(cell+gp)-gp;
+        const seq = Math.floor(seg(t,16,22.4)*cols*rows*2);
+        gpuGrid(Pl.x+ (Pl.w-(cols*(cell+gp)-gp))/2, Pl.y+370, cols, rows, cell, gp, (c,r)=> (r*cols+c)===seq% (cols*rows));
+        gpuGrid(Pr.x+ (Pr.w-(cols*(cell+gp)-gp))/2, Pr.y+370, cols, rows, cell, gp, ()=> true);
+        text('one at a time', Pl.x+Pl.w/2, Pl.y+370+gridH+38, { size:24, color:C.dim, alpha:gA });
+        text('all at once — every word in parallel', Pr.x+Pr.w/2, Pr.y+370+gridH+38, { size:24, color:C.teal, alpha:gA });
+        g.restore();
+      }
+      g.restore();
+    }
+    /* tower assembly */
+    const tw = seg(t, 23.4, 24.4);
+    if (tw>0) {
+      const bx = W/2, bw = 480, bh = 74, gap = 14;
+      const n = 6;
+      for (let i=0;i<n;i++){
+        const u = seg(t, 24 + i*.55, 24.9 + i*.55);
+        if (u<=0) continue;
+        const y = 700 - i*(bh+gap) - bh;
+        const yy = lerp(y-260, y, eb(u));
+        panel(bx-bw/2, yy, bw, bh, { alpha:u, fill:'rgba(63,214,188,.10)', stroke:'rgba(63,214,188,.5)', r:14 });
+        text('attention  +  feed-forward', bx, yy+bh/2, { size:25, color:C.teal, alpha:u, weight:600 });
+      }
+      const lab = seg(t, 27.6, 28.6);
+      if (lab>0){
+        text('THE  TRANSFORMER', bx, 760, { size:40, weight:800, color:C.ink, letter:6, alpha:lab });
+        // input words / output
+        text('words in', bx-bw/2-110, 665, { size:24, color:C.dim, alpha:lab });
+        text('meaning out', bx+bw/2+130, 240, { size:24, color:C.dim, alpha:lab });
+        g.save(); g.globalAlpha=lab; g.strokeStyle='rgba(255,255,255,.3)'; g.lineWidth=2.5;
+        g.beginPath(); g.moveTo(bx-bw/2-110, 640); g.lineTo(bx-bw/2-110, 560); g.lineTo(bx-bw/2-20, 560); g.stroke();
+        g.beginPath(); g.moveTo(bx+bw/2+130, 270); g.lineTo(bx+bw/2+130, 330); g.lineTo(bx+bw/2+20, 330); g.stroke();
+        g.restore();
+      }
+      const rec = seg(t, 29.5, 30.7);
+      if (rec>0){
+        panel(W/2+420, 420, 420, 190, { alpha:rec, stroke:'rgba(255,212,94,.4)' });
+        text('2017 RESULTS', W/2+630, 462, { size:21, weight:700, letter:3, color:C.gold, alpha:rec });
+        text('new translation records', W/2+630, 505, { size:25, color:C.ink, alpha:rec });
+        text('3.5 days · 8 GPUs', W/2+630, 545, { size:25, color:C.ink, alpha:rec });
+        text('a fraction of the usual cost', W/2+630, 583, { size:21, color:C.dim, alpha:rec });
+      }
+    }
+  }
+});
+
+/* ----- S7 · LEGACY (25s) ----- */
+const webEnd = { v:null };
+SCENES.push({
+  key:'legacy', kicker:'LEGACY', dur:25,
+  captions: [
+    [0.6, 8.0,  'The recipe scaled. More data, more chips, bigger towers — and it just kept getting better.'],
+    [8.4, 15.4, 'Its descendants now write, translate, code, and converse. The T in GPT stands for Transformer.'],
+    [15.8, 24.0,'One idea, pushed all the way: to understand, you don\'t need to remember everything in order — you need to know where to look.'],
+  ],
+  draw(t) {
+    if (!webEnd.v) webEnd.v = makeWeb(21, 54, 160, 120, W-160, 760);
+    /* growth: three towers rising */
+    const gA = fadeInOut(t, .2, 8.2, .8);
+    if (gA>0) {
+      const specs = [ {x:W/2-430, n:3, s:.7}, {x:W/2, n:6, s:1}, {x:W/2+440, n:9, s:1.12} ];
+      specs.forEach((sp,k)=>{
+        const u = seg(t, .6+k*1.6, 2.4+k*1.6);
+        for (let i=0;i<sp.n;i++){
+          const uu = seg(u, i/sp.n, (i+1)/sp.n);
+          if (uu<=0) continue;
+          const bw= 230*sp.s, bh= 42*sp.s;
+          panel(sp.x-bw/2, 660 - i*(bh+8), bw, bh, { alpha:gA*uu, fill:`rgba(63,214,188,${k===2?.28:.18})`, stroke:'rgba(63,214,188,.75)', r:9 });
+        }
+        const labels=['2017','2019','today…'];
+        text(labels[k], sp.x, 726, { size:25, color:C.dim, alpha:gA*seg(u,.8,1) });
+      });
+      text('same recipe, more scale', W/2, 216, { size:30, color:C.dim, alpha:gA*seg(t,4,5.2) });
+    }
+    /* GPT beat */
+    const gpt = fadeInOut(t, 8.4, 15.6, .7);
+    if (gpt>0) {
+      text('G', W/2-170, 400, { size:150, weight:800, color:C.ink, alpha:gpt });
+      text('P', W/2,     400, { size:150, weight:800, color:C.ink, alpha:gpt });
+      text('T', W/2+170, 400, { size:150, weight:800, color:C.teal, alpha:gpt });
+      const sub = seg(t, 10, 11);
+      text('Generative · Pre-trained ·', W/2-64, 520, { size:29, color:C.dim, alpha:gpt*sub, align:'right' });
+      text('Transformer', W/2-44, 520, { size:29, weight:700, color:C.teal, alpha:gpt*sub, align:'left' });
+    }
+    /* finale card */
+    const fin = seg(t, 16.2, 17.6);
+    if (fin>0) {
+      drawWeb(webEnd.v, t, .55*fin, { gold:true });
+      text('Attention was all you needed.', W/2, 430, { size:74, font:SERIF, weight:700, color:C.ink, alpha:fin });
+      text('“Attention Is All You Need” · Vaswani et al. · NeurIPS 2017 · arXiv 1706.03762', W/2, 530, { size:26, color:C.dim, alpha:seg(t,17.2,18.4) });
+      text('↻ watch again — press space or click', W/2, 600, { size:23, color:C.faint, alpha:seg(t,19,20.5)*pulse(t,2.5)});
+    }
+  }
+});
+
+/* ============================== player ============================== */
+let OFFSETS = []; { let acc=0; for (const s of SCENES){ OFFSETS.push(acc); acc += s.dur; } }
+const DURATION = SCENES.reduce((a,s)=>a+s.dur,0);
+window.__DURATION = DURATION;
+
+const cv = document.getElementById('cv');
+const params = new URLSearchParams(location.search);
+let tNow = parseFloat(params.get('t') || '0') || 0;
+let playing = !(params.get('paused') === '1');
+if (params.get('clean') === '1') document.getElementById('bar').style.display = 'none';
+tNow = clamp(tNow, 0, DURATION - 0.05);
+
+let dpr = 1, cssW = 0, cssH = 0;
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const ar = W/H;
+  cssW = Math.min(vw, vh*ar); cssH = cssW/ar;
+  cv.style.width = cssW+'px'; cv.style.height = cssH+'px';
+  cv.width = Math.round(cssW*dpr); cv.height = Math.round(cssH*dpr);
+  g = cv.getContext('2d');
+}
+window.addEventListener('resize', ()=>{ resize(); render(); });
+resize();
+
+function sceneAt(t) {
+  for (let i=SCENES.length-1;i>=0;i--) if (t >= OFFSETS[i]) return [SCENES[i], t-OFFSETS[i], i];
+  return [SCENES[0], t, 0];
+}
+
+function render() {
+  const [sc, lt] = sceneAt(tNow);
+  g.setTransform(cv.width/W, 0, 0, cv.height/H, 0, 0);
+  // bg
+  const grd = g.createRadialGradient(W/2, H*0.42, 120, W/2, H*0.55, 1200);
+  grd.addColorStop(0, '#121a2e'); grd.addColorStop(1, '#0a0e18');
+  g.fillStyle = grd; g.fillRect(0,0,W,H);
+  // scene
+  const fadeIn = seg(lt, 0, .5), fadeOut = 1 - seg(lt, sc.dur-.45, sc.dur);
+  g.save(); g.globalAlpha = Math.min(fadeIn, fadeOut);
+  sc.draw(lt);
+  g.restore();
+  // kicker
+  if (sc.kicker) kicker(sc.kicker, Math.min(seg(lt,.2,.9), fadeOut));
+  // captions
+  for (const [a,b,str] of sc.captions) {
+    const al = fadeInOut(lt, a, b, .35);
+    if (al>0) caption(str, al);
+  }
+  // progress dot row (scene indicator, top-right)
+  g.save();
+  for (let i=0;i<SCENES.length;i++){
+    const on = tNow >= OFFSETS[i];
+    g.fillStyle = on ? 'rgba(255,212,94,.85)' : 'rgba(255,255,255,.18)';
+    g.beginPath(); g.arc(W-96- (SCENES.length-1-i)*26, 89, on?4.5:3.5, 0, TAU); g.fill();
+  }
+  g.restore();
+  syncBar();
+}
+
+/* controls */
+const bar = document.getElementById('bar');
+const playBtn = document.getElementById('playBtn');
+const clockEl = document.getElementById('clock');
+const fillEl = document.getElementById('fill');
+const trackEl = document.getElementById('track');
+const chapEl = document.getElementById('chapname');
+const fmt = s => `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`;
+function syncBar() {
+  playBtn.innerHTML = playing ? '&#10073;&#10073;' : '&#9654;';
+  clockEl.textContent = `${fmt(tNow)} / ${fmt(DURATION)}`;
+  fillEl.style.width = (100*tNow/DURATION)+'%';
+  const [sc] = sceneAt(tNow);
+  chapEl.textContent = sc.kicker || 'ATTENTION IS ALL YOU NEED';
+}
+for (let i=1;i<SCENES.length;i++){
+  const tick = document.createElement('div');
+  tick.className='tick'; tick.style.left = (100*OFFSETS[i]/DURATION)+'%';
+  trackEl.appendChild(tick);
+}
+trackEl.addEventListener('pointerdown', e=>{
+  const r = trackEl.getBoundingClientRect();
+  tNow = clamp((e.clientX-r.left)/r.width, 0, 1) * DURATION;
+  render();
+});
+playBtn.addEventListener('click', ()=> setPlaying(!playing));
+cv.addEventListener('click', ()=> setPlaying(!playing));
+window.addEventListener('keydown', e=>{
+  if (e.code==='Space'){ e.preventDefault(); if (tNow>=DURATION-0.1) tNow=0; setPlaying(!playing); }
+  if (e.code==='ArrowRight'){ tNow = clamp(tNow+5, 0, DURATION-.05); render(); }
+  if (e.code==='ArrowLeft'){ tNow = clamp(tNow-5, 0, DURATION-.05); render(); }
+});
+function setPlaying(p){ playing = p; if (playing && tNow>=DURATION-0.1) tNow = 0; last = null; if (playing) requestAnimationFrame(tick); render(); }
+
+/* auto-hide bar */
+let hideTimer = null;
+function poke(){ bar.classList.remove('hidden'); clearTimeout(hideTimer); hideTimer = setTimeout(()=>{ if (playing) bar.classList.add('hidden'); }, 2600); }
+window.addEventListener('pointermove', poke); poke();
+
+/* main loop */
+let last = null;
+function tick(ts) {
+  if (!playing) return;
+  if (last==null) last = ts;
+  const dt = Math.min((ts-last)/1000, .1); last = ts;
+  tNow += dt;
+  if (tNow >= DURATION) { tNow = DURATION-0.001; playing = false; }
+  render();
+  if (playing) requestAnimationFrame(tick);
+}
+window.__seek = (t, pause=true)=>{ tNow = clamp(t,0,DURATION-.01); if (pause){ playing=false; } render(); };
+render();
+if (playing) requestAnimationFrame(tick);
+</script>
